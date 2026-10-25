@@ -35,6 +35,8 @@ class SimulationEngine:
         self.rate_limits = np.full(3, 15.)
         self.wheel_setpoint = np.zeros(3)
         self.target = np.zeros(3)
+        self.desired_visual_offset_deg = np.zeros(2)
+        self.tracking_profile = 'yaw_only'
         self.moving_target = False
         self.occluded_until = 0.
         self.dropout_until = 0.
@@ -114,6 +116,28 @@ class SimulationEngine:
             self.mode = 'ATTITUDE HOLD'
             self.reset_controller_memory()
             return 'Current attitude copied to the reference in SIM.'
+        if kind == CommandKind.SIM_TARGET:
+            pitch = float(p.get('target_pitch_deg', 0.))
+            yaw = float(p.get('target_yaw_deg', 0.))
+            offset_x = float(p.get('desired_x_deg', 0.))
+            offset_y = float(p.get('desired_y_deg', 0.))
+            values = np.array([pitch, yaw, offset_x, offset_y], dtype=float)
+            if not np.isfinite(values).all():
+                raise ValueError('Simulation target values must be finite.')
+            if abs(pitch) > 75. or abs(yaw) > 180.:
+                raise ValueError('Simulation target must stay within Pitch +/-75 deg and Yaw +/-180 deg.')
+            if abs(offset_x) > 25. or abs(offset_y) > 25.:
+                raise ValueError('Desired camera offset is limited to +/-25 deg in this simulator.')
+            self.target[:] = [0., pitch, yaw]
+            self.desired_visual_offset_deg[:] = [offset_x, offset_y]
+            self.moving_target = bool(p.get('moving', False))
+            profile = str(p.get('tracking_profile', 'yaw_only'))
+            if profile not in ('yaw_only', 'three_axis'):
+                raise ValueError('Unknown simulation tracking profile.')
+            self.tracking_profile = profile
+            self._refresh_camera()
+            return (f'SIM target placed at Pitch {pitch:+.1f} deg, Yaw {yaw:+.1f} deg; '
+                    f'desired image offset X {offset_x:+.1f} deg, Y {offset_y:+.1f} deg.')
         if kind == CommandKind.TRACK:
             self.mode = 'TARGET TRACKING'
             self.tracking_roll = 0.
@@ -134,9 +158,39 @@ class SimulationEngine:
         self.target_uv = self.camera.detect(self.image)
         if self.mode == 'TARGET TRACKING' and self.target_uv is not None:
             # Image + idealized onboard attitude estimate, not target truth, drives control.
-            self.reference = self.camera.pointing_reference(self.target_uv, self.plant.attitude,
-                                                           self.tracking_roll)
+            visual_reference = self.camera.pointing_reference(
+                self.target_uv, self.plant.attitude, self.tracking_roll,
+                tuple(self.desired_visual_offset_deg))
+            if self.tracking_profile == 'yaw_only':
+                # Original assignment: camera closes only Yaw; Roll/Pitch are
+                # damped toward zero rather than used as free pointing axes.
+                self.reference = np.array([0., 0., visual_reference[2]])
+            else:
+                # Team extension for the confirmed 3-wheel hardware.
+                self.reference = visual_reference
             self.last_seen = self.time
+
+    def place_target_from_image_uv(self, uv: tuple[float, float]) -> tuple[float, float]:
+        """Place the synthetic target so it appears at a clicked image location.
+
+        The click defines where the point is *currently* seen in the camera. The
+        simulator converts that image ray and the current body attitude into a
+        new world target direction. Desired image X/Y remains a separate command:
+        after switching to tracking, the controller will move the point toward
+        that desired image location.
+        """
+        u, v = map(float, uv)
+        if not np.isfinite([u, v]).all():
+            raise ValueError('Clicked image coordinates must be finite.')
+        if not (0.0 <= u <= self.camera.width - 1 and 0.0 <= v <= self.camera.height - 1):
+            raise ValueError('Clicked image coordinates are outside the camera frame.')
+        ray = np.array([1., (u - self.camera.cx) / self.camera.focal, -(v - self.camera.cy) / self.camera.focal])
+        world = rotation_matrix(self.plant.attitude) @ ray
+        pitch = float(np.rad2deg(np.arctan2(-world[2], np.hypot(world[0], world[1]))))
+        yaw = float(np.rad2deg(np.arctan2(world[1], world[0])))
+        self.target[:] = [0., pitch, yaw]
+        self._refresh_camera()
+        return pitch, yaw
 
     def advance(self, duration: float = .05) -> None:
         if not np.isfinite(duration) or duration <= 0 or duration > 1.:
@@ -197,8 +251,19 @@ class SimulationEngine:
     def nudge(self, axis: int, degrees: float = 20.) -> None:
         if axis not in (0, 1, 2) or not np.isfinite(degrees):
             raise ValueError('Invalid disturbance.')
-        # A prescribed orientation displacement, not a calibrated mechanical impulse.
-        self.plant.attitude[axis] += float(degrees)
+        delta = np.zeros(3)
+        delta[axis] = float(degrees)
+        self.nudge_vector(delta)
+
+    def nudge_vector(self, delta_deg: np.ndarray) -> None:
+        """Apply a user disturbance to the virtual body orientation.
+
+        This is intentionally a kinematic shove for the demonstrator, not a
+        calibrated force/impulse model. The controller then has to recover from
+        the displaced attitude using the normal simulated telemetry path.
+        """
+        delta = vector3(delta_deg, 'Disturbance', 45.)
+        self.plant.attitude[:] = (self.plant.attitude + delta + 180.) % 360. - 180.
         self._refresh_camera()
 
     def load_initial_state(self, attitude: np.ndarray) -> None:
@@ -209,6 +274,8 @@ class SimulationEngine:
         self.reference = np.zeros(3)
         self.mode = 'ATTITUDE HOLD'
         self.target = np.zeros(3)
+        self.desired_visual_offset_deg = np.zeros(2)
+        self.tracking_profile = 'yaw_only'
         self.moving_target = False
         self.occluded_until = self.dropout_until = 0.
         self.last_seen = 0.

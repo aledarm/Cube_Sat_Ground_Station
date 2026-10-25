@@ -110,14 +110,53 @@ class MainWindow(QMainWindow):
             self.footer.setText('Live selected. Awaiting Ricardo/Edson TMTC ICD; no network traffic is sent.')
 
     def send_command(self, command) -> None:
-        if isinstance(command, tuple) and command and command[0] == 'sim_nudge':
-            if self.source_mode == 'Simulation' and not self.backend.engine.estop:
-                axis, degrees = command[1]
-                self.backend.engine.nudge(int(axis), float(degrees))
-                self.dashboard.receipt.setText(f'SIM disturbance applied: axis {axis}, {degrees:+.1f} deg.')
-            else:
-                self.dashboard.receipt.setText('Simulation disturbance unavailable in Live mode or while E-STOP is latched.')
-            return
+        if isinstance(command, tuple) and command:
+            if command[0] == 'sim_load_scenario':
+                if self.source_mode != 'Simulation':
+                    self.dashboard.receipt.setText('Scenarios are available only in Simulation mode.')
+                    return
+                try:
+                    self.backend.scenario.load(command[1])
+                    self.dashboard.reset_history()
+                    self.dashboard.set_scenario_status(self.backend.scenario.status, self.backend.scenario.detail)
+                    self.dashboard.receipt.setText(f'SIM scenario loaded: {command[1]}.')
+                except ValueError as exc:
+                    self.dashboard.receipt.setText(f'Scenario rejected: {exc}')
+                self.refresh_safety()
+                return
+            if command[0] == 'sim_place_target_from_image_uv':
+                if self.source_mode != 'Simulation':
+                    self.dashboard.receipt.setText('Camera-click target placement is available only in Simulation mode.')
+                    return
+                try:
+                    payload = command[1]
+                    self.backend.engine.desired_visual_offset_deg[:] = [float(payload.get('desired_x_deg', 0.0)), float(payload.get('desired_y_deg', 0.0))]
+                    self.backend.engine.moving_target = bool(payload.get('moving', False))
+                    profile = str(payload.get('tracking_profile', 'yaw_only'))
+                    if profile in ('yaw_only', 'three_axis'):
+                        self.backend.engine.tracking_profile = profile
+                    pitch, yaw = self.backend.engine.place_target_from_image_uv(payload['uv'])
+                    self.dashboard.set_sim_target_fields(pitch, yaw)
+                    self.dashboard.receipt.setText(
+                        f'SIM target placed from camera click at Pitch {pitch:+.1f} deg, Yaw {yaw:+.1f} deg.'
+                    )
+                except Exception as exc:
+                    self.dashboard.receipt.setText(f'Camera-click target rejected: {exc}')
+                return
+            if command[0] in ('sim_nudge', 'sim_nudge_vector'):
+                if self.source_mode == 'Simulation' and not self.backend.engine.estop:
+                    if command[0] == 'sim_nudge':
+                        axis, degrees = command[1]
+                        self.backend.engine.nudge(int(axis), float(degrees))
+                        text = f'axis {axis}, {degrees:+.1f} deg'
+                    else:
+                        delta = command[1]
+                        self.backend.engine.nudge_vector(delta)
+                        text = 'mouse drag [Roll {:+.1f}, Pitch {:+.1f}, Yaw {:+.1f}] deg'.format(*delta)
+                    self.dashboard.receipt.setText(f'SIM disturbance applied: {text}. Controller recovery continues onboard in SIM.')
+                else:
+                    self.dashboard.receipt.setText('Simulation disturbance unavailable in Live mode or while E-STOP is latched.')
+                return
         if self.source_mode == 'Live':
             # Intentional placeholder. Real adapter will serialize Command through the final TMTC ICD.
             self.dashboard.receipt.setText(f'{command.kind.value}: NOT SENT — Live TMTC adapter not configured.')
@@ -159,6 +198,7 @@ class MainWindow(QMainWindow):
                 self.received += 1
                 self.last_rx_wall = time.monotonic()
                 self.dashboard.update_sample(sample)
+            self.dashboard.set_scenario_status(self.backend.scenario.status, self.backend.scenario.detail)
             self.refresh_safety()
             self.footer.setText(
                 f'Source: LOCAL SIM · received {self.received} · skipped {self.skipped} · '

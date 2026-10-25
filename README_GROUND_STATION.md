@@ -59,3 +59,12 @@ Before Live integration, confirm with the team:
 - reaction-wheel command limits;
 - exact onboard controller gain structure and units;
 - camera streaming/target-data format.
+
+## v0.3 - Interactive simulation additions
+
+- The cube attitude panel is telemetry-driven and uses a projected 3-D body with rotating body axes.
+- In Simulation mode, drag the cube with the left mouse button to apply Pitch/Yaw disturbances. Hold Shift while dragging horizontally to disturb Roll.
+- A Simulation Target panel places the virtual poster point by world Pitch/Yaw and defines a desired camera-image offset.
+- Default visual-control profile is **Original brief - Yaw only**: camera error closes Yaw, while Roll/Pitch damp toward zero. A clearly labelled **3-axis extension** is available for the team's confirmed three-wheel hardware exploration.
+- Original-project scenarios are exposed in the GUI: 30 deg acquisition, 60 s hold, 20 deg disturbance/recovery, moving target, and 2 s occlusion.
+- The simulator remains a test model. It does not replace the onboard ESP32 control implementation or the final TMTC ICD.

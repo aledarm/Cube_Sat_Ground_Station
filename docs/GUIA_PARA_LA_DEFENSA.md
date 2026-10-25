@@ -139,3 +139,11 @@ Seguimiento y ocultación terminan con **REVIEW** porque no hay una rúbrica num
 - PyQt5: https://pypi.org/project/PyQt5/
 - PyQtGraph: https://pyqtgraph.readthedocs.io/en/pyqtgraph-0.13.7/
 
+
+## Interacción 3D y simulación visual (v0.3)
+
+La vista del cubo no ejecuta el control. Solo representa la actitud recibida por telemetría. En modo Simulation, un arrastre del mouse se convierte en una perturbación del modelo; el controlador del simulador intenta recuperarse y la GUI vuelve a representar la respuesta mediante telemetría.
+
+El perfil por defecto conserva el enunciado original: la cámara cierra el lazo visual sobre Yaw y Roll/Pitch se amortiguan hacia cero. La opción `3-axis extension` está identificada explícitamente como una ampliación para estudiar la arquitectura de tres ruedas del equipo.
+
+El panel `Simulation Target` permite definir la dirección angular del punto virtual y el offset visual deseado. Con offset X=0 e Y=0 el objetivo es llevar el punto al centro de la imagen. Los escenarios de adquisición, hold, perturbación, moving target y occlusion reproducen los ensayos descritos en el enunciado, pero sus resultados validan solo el modelo simulado, no el hardware final.

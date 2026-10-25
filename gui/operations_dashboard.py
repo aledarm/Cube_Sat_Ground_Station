@@ -5,13 +5,14 @@ import pyqtgraph as pg
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFrame, QLabel, QPushButton,
-    QComboBox, QDoubleSpinBox
+    QComboBox, QDoubleSpinBox, QCheckBox
 )
 
 from core.models import Command, CommandKind, Telemetry, angular_error
 from gui.widgets import Card, CubeView, CameraView, label, spin
 from gui.style import AXIS_COLORS
 from simulation.engine import LOOPS
+from simulation.scenarios import SCENARIOS
 
 
 class MiniPanel(QFrame):
@@ -51,7 +52,7 @@ class OperationsDashboard(QWidget):
         # ---------------- LEFT: TELEMETRY ----------------
         left = QVBoxLayout()
         left.setSpacing(12)
-        body.addLayout(left, 11)
+        body.addLayout(left, 10)
 
         telemetry = Card('Telemetry Summary')
         summary = QHBoxLayout()
@@ -83,13 +84,15 @@ class OperationsDashboard(QWidget):
 
         cube_card = Card('Cube Attitude')
         cube_header = QHBoxLayout()
-        cube_header.addWidget(label('Live orientation from the current telemetry source.', 'Muted', False))
+        cube_header.addWidget(label('Telemetry-driven 3D view', 'Muted', False))
         cube_header.addStretch()
         self.cube_readout = label('Roll --   Pitch --   Yaw --', 'Muted', False)
         cube_header.addWidget(self.cube_readout)
         cube_card.box.addLayout(cube_header)
         self.cube = CubeView()
         self.cube.setMinimumHeight(270)
+        self.cube.disturbance_requested.connect(
+            lambda delta: self.command_requested.emit(('sim_nudge_vector', delta)))
         cube_card.box.addWidget(self.cube)
         left.addWidget(cube_card, 3)
 
@@ -127,7 +130,7 @@ class OperationsDashboard(QWidget):
         # ---------------- RIGHT: OPERATIONS ----------------
         right = QVBoxLayout()
         right.setSpacing(12)
-        body.addLayout(right, 9)
+        body.addLayout(right, 10)
 
         manual = Card('Manual Control')
         manual_grid = QGridLayout()
@@ -153,9 +156,49 @@ class OperationsDashboard(QWidget):
         quick.addWidget(self.disturbance)
         quick.addStretch()
         manual.box.addLayout(quick)
-        self.manual_note = label('Setpoint is sent to the active source. The closed-loop correction remains onboard.', 'Muted')
-        manual.box.addWidget(self.manual_note)
         right.addWidget(manual)
+
+        self.sim_target_card = Card('Simulation Target')
+        target_grid = QGridLayout()
+        target_grid.setHorizontalSpacing(10)
+        target_fields = [
+            ('Target Pitch', -75, 75, 0),
+            ('Target Yaw', -180, 180, 30),
+            ('Desired image X', -25, 25, 0),
+            ('Desired image Y', -25, 25, 0),
+        ]
+        self.sim_target_inputs = []
+        for col, (name, low, high, initial) in enumerate(target_fields):
+            target_grid.addWidget(label(name, 'Muted'), 0, col)
+            field = spin(low, high, initial, 1, 1)
+            self.sim_target_inputs.append(field)
+            target_grid.addWidget(field, 1, col)
+        self.moving_target = QCheckBox('Moving target')
+        self.tracking_profile = QComboBox()
+        self.tracking_profile.addItem('Original brief — Yaw only', 'yaw_only')
+        self.tracking_profile.addItem('3-axis extension', 'three_axis')
+        self.apply_sim_target = QPushButton('Place Target')
+        self.apply_sim_target.setObjectName('Primary')
+        target_grid.addWidget(self.apply_sim_target, 1, 4)
+        self.center_target = QPushButton('Centre Desired Point')
+        target_grid.addWidget(self.center_target, 2, 3)
+        self.sim_target_card.box.addLayout(target_grid)
+        scenario_line = QHBoxLayout()
+        scenario_line.setSpacing(8)
+        scenario_line.addWidget(self.moving_target)
+        scenario_line.addWidget(label('Profile', 'Muted', False))
+        scenario_line.addWidget(self.tracking_profile)
+        scenario_line.addSpacing(8)
+        scenario_line.addWidget(label('Scenario', 'Muted', False))
+        self.scenario_selector = QComboBox()
+        self.scenario_selector.addItems(list(SCENARIOS))
+        scenario_line.addWidget(self.scenario_selector, 1)
+        self.load_scenario = QPushButton('Load')
+        scenario_line.addWidget(self.load_scenario)
+        self.scenario_status = label('Manual', 'Muted', False)
+        scenario_line.addWidget(self.scenario_status)
+        self.sim_target_card.box.addLayout(scenario_line)
+        right.addWidget(self.sim_target_card)
 
         wheel = Card('Wheel Command')
         wg = QGridLayout()
@@ -169,7 +212,6 @@ class OperationsDashboard(QWidget):
         self.send_wheels.setObjectName('Primary')
         wg.addWidget(self.send_wheels, 1, 3)
         wheel.box.addLayout(wg)
-        wheel.box.addWidget(label('Bench-test command. Final limits and feedback fields must be confirmed with Edson.', 'Muted'))
         right.addWidget(wheel)
 
         tuning = Card('Control Tuning')
@@ -188,20 +230,18 @@ class OperationsDashboard(QWidget):
         self.apply_gains.setObjectName('Primary')
         tg.addWidget(self.apply_gains, 2, 7)
         tuning.box.addLayout(tg)
-        self.gain_note = label('These fields configure the onboard controller; the Ground Station does not close the attitude loop.', 'Muted')
-        tuning.box.addWidget(self.gain_note)
         right.addWidget(tuning)
 
         camera = Card('Camera View')
         cam_header = QHBoxLayout()
-        cam_header.addWidget(label('Reserved for onboard camera stream / processed target view.', 'Muted', False))
+        cam_header.addWidget(label('Synthetic / onboard camera area', 'Muted', False))
         cam_header.addStretch()
         self.camera_status = label('Target: --', 'Muted', False)
         cam_header.addWidget(self.camera_status)
         camera.box.addLayout(cam_header)
         cam_body = QHBoxLayout()
         self.camera = CameraView()
-        self.camera.setMinimumHeight(260)
+        self.camera.setMinimumHeight(340)
         cam_body.addWidget(self.camera, 4)
         cam_stats = MiniPanel('Tracking')
         self.target_detected = cam_stats.add_row('Detected', '--')
@@ -210,10 +250,10 @@ class OperationsDashboard(QWidget):
         self.target_error = cam_stats.add_row('Error', '--')
         cam_body.addWidget(cam_stats, 1)
         camera.box.addLayout(cam_body)
-        right.addWidget(camera, 3)
+        right.addWidget(camera, 5)
 
         self.receipt = label('No command sent yet.', 'Muted')
-        right.addWidget(self.receipt)
+        self.receipt.hide()
 
         self.samples: deque[Telemetry] = deque(maxlen=1200)
         self.plot_kind.currentTextChanged.connect(self.refresh_plot)
@@ -224,6 +264,39 @@ class OperationsDashboard(QWidget):
         self.hold_current.clicked.connect(lambda: self.command_requested.emit(Command(CommandKind.HOLD)))
         self.track_target.clicked.connect(lambda: self.command_requested.emit(Command(CommandKind.TRACK)))
         self.disturbance.clicked.connect(lambda: self.command_requested.emit(('sim_nudge', (2, 20.0))))
+        self.apply_sim_target.clicked.connect(self._send_sim_target)
+        self.center_target.clicked.connect(self._centre_visual_target)
+        self.load_scenario.clicked.connect(lambda: self.command_requested.emit(('sim_load_scenario', self.scenario_selector.currentText())))
+        self.camera.target_clicked.connect(self._place_target_from_camera_click)
+
+    def _centre_visual_target(self) -> None:
+        self.sim_target_inputs[2].setValue(0.)
+        self.sim_target_inputs[3].setValue(0.)
+        self._send_sim_target()
+
+    def _place_target_from_camera_click(self, uv: tuple[float, float]) -> None:
+        self.command_requested.emit(('sim_place_target_from_image_uv', {
+            'uv': uv,
+            'desired_x_deg': self.sim_target_inputs[2].value(),
+            'desired_y_deg': self.sim_target_inputs[3].value(),
+            'moving': self.moving_target.isChecked(),
+            'tracking_profile': self.tracking_profile.currentData(),
+        }))
+
+    def set_sim_target_fields(self, pitch_deg: float, yaw_deg: float) -> None:
+        self.sim_target_inputs[0].setValue(float(pitch_deg))
+        self.sim_target_inputs[1].setValue(float(yaw_deg))
+
+    def _send_sim_target(self) -> None:
+        pitch, yaw, offset_x, offset_y = [w.value() for w in self.sim_target_inputs]
+        self.command_requested.emit(Command(CommandKind.SIM_TARGET, {
+            'target_pitch_deg': pitch,
+            'target_yaw_deg': yaw,
+            'desired_x_deg': offset_x,
+            'desired_y_deg': offset_y,
+            'moving': self.moving_target.isChecked(),
+            'tracking_profile': self.tracking_profile.currentData(),
+        }))
 
     def _send_attitude(self) -> None:
         rate = self.max_rate.value()
@@ -254,8 +327,23 @@ class OperationsDashboard(QWidget):
     def set_command_enabled(self, enabled: bool, live_placeholder: bool = False) -> None:
         for w in [self.send_setpoint, self.send_wheels, self.apply_gains, self.hold_current, self.track_target, self.disturbance]:
             w.setEnabled(enabled)
+        # Simulation Target is a local test-environment control, not part of the
+        # unfinished Live TMTC interface. Hide it completely in Live mode.
+        self.sim_target_card.setVisible(not live_placeholder)
+        self.apply_sim_target.setEnabled(enabled and not live_placeholder)
+        self.center_target.setEnabled(enabled and not live_placeholder)
+        self.moving_target.setEnabled(enabled and not live_placeholder)
+        self.tracking_profile.setEnabled(enabled and not live_placeholder)
+        self.scenario_selector.setEnabled(enabled and not live_placeholder)
+        self.load_scenario.setEnabled(enabled and not live_placeholder)
+        for w in self.sim_target_inputs:
+            w.setEnabled(enabled and not live_placeholder)
+        self.cube.setEnabled(not live_placeholder)
         if live_placeholder:
             self.receipt.setText('LIVE mode selected. TMTC adapter is intentionally not configured yet.')
+
+    def set_scenario_status(self, status: str, detail: str) -> None:
+        self.scenario_status.setText(f'{status}: {detail}')
 
     def reset_history(self) -> None:
         self.samples.clear()

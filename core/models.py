@@ -19,6 +19,7 @@ class CommandKind(str, Enum):
     ATTITUDE = 'attitude_setpoint'
     HOLD = 'hold_current_attitude'
     TRACK = 'track_target'
+    SIM_TARGET = 'simulation_target'
     WHEEL_SPEED = 'wheel_speed_test'
     GAINS = 'set_gains'
     ESTOP = 'emergency_stop'

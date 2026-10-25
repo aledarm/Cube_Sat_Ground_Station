@@ -106,3 +106,42 @@ def test_outward_torque_blocked_at_wheel_limit():
     p.step(np.full(3,.01),.01)
     np.testing.assert_allclose(p.motor_torque,0.)
     assert p.saturated.all()
+
+
+def test_simulation_target_configuration_and_mouse_vector_nudge():
+    e=SimulationEngine()
+    result=cmd(e,C.SIM_TARGET,target_pitch_deg=8,target_yaw_deg=30,
+               desired_x_deg=4,desired_y_deg=-2,moving=False)
+    assert result.applied
+    np.testing.assert_allclose(e.target,[0,8,30])
+    np.testing.assert_allclose(e.desired_visual_offset_deg,[4,-2])
+    before=e.plant.attitude.copy()
+    e.nudge_vector([3,-4,5])
+    np.testing.assert_allclose(e.plant.attitude-before,[3,-4,5])
+
+
+def test_tracking_from_thirty_degrees_reduces_visual_error():
+    e=SimulationEngine(seed=3)
+    cmd(e,C.SIM_TARGET,target_pitch_deg=0,target_yaw_deg=0,
+        desired_x_deg=0,desired_y_deg=0,moving=False)
+    e.load_initial_state(np.array([0.,0.,30.]))
+    cmd(e,C.TRACK); cmd(e,C.ARM)
+    first=e.snapshot()
+    assert first.target_detected
+    first_error=np.hypot(*first.visual_error_deg)
+    for _ in range(120):
+        e.advance(.05)
+    final=e.snapshot()
+    assert final.target_detected
+    assert np.hypot(*final.visual_error_deg) < first_error
+
+
+def test_place_target_from_camera_click_anywhere_in_frame():
+    e = SimulationEngine(seed=5)
+    pitch, yaw = e.place_target_from_image_uv((40.0, 200.0))
+    assert np.isfinite([pitch, yaw]).all()
+    snap = e.snapshot()
+    assert snap.target_detected
+    u, v = snap.target_uv
+    assert abs(u - 40.0) < 2.0
+    assert abs(v - 200.0) < 2.0

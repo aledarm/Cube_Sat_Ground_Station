@@ -46,9 +46,19 @@ class VirtualCamera:
                 float(np.rad2deg(np.arctan2(uv[1] - self.cy, self.focal))))
 
     def pointing_reference(self, uv: tuple[float, float], attitude: np.ndarray,
-                           roll_reference: float = 0.) -> np.ndarray:
+                           roll_reference: float = 0.,
+                           desired_offset_deg: tuple[float, float] = (0., 0.)) -> np.ndarray:
+        """Convert an observed target into an attitude reference.
+
+        ``desired_offset_deg`` is (horizontal, vertical) in camera degrees. Zero
+        centres the point. A non-zero value implements the assignment's later
+        extension: keep the detected point deliberately off-centre according to
+        a Ground Station setpoint. The target direction is reconstructed from the
+        camera ray + current attitude; no simulator target truth is used here.
+        """
         ray = np.array([1., (uv[0] - self.cx) / self.focal, -(uv[1] - self.cy) / self.focal])
         world = rotation_matrix(attitude) @ ray
-        return np.array([roll_reference,
-                         np.rad2deg(np.arctan2(-world[2], np.hypot(world[0], world[1]))),
-                         np.rad2deg(np.arctan2(world[1], world[0]))])
+        target_pitch = np.rad2deg(np.arctan2(-world[2], np.hypot(world[0], world[1])))
+        target_yaw = np.rad2deg(np.arctan2(world[1], world[0]))
+        horizontal, vertical = map(float, desired_offset_deg)
+        return np.array([roll_reference, target_pitch + vertical, target_yaw - horizontal])
