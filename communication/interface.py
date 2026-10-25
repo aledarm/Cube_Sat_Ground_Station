@@ -1,0 +1,9 @@
+"""The interface consumed by the GUI; no PyQt dependency here."""
+from typing import Protocol
+from core.models import Command, CommandResult, Telemetry
+
+
+class Backend(Protocol):
+    def send_command(self, command: Command) -> CommandResult: ...
+    def tick(self, dt: float) -> Telemetry | None: ...
+    def close(self) -> None: ...
