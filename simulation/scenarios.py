@@ -84,7 +84,11 @@ class ScenarioRunner:
         from core.models import angular_error
         reference = self.engine.target.copy()
         reference[0] = self.engine.tracking_roll
-        error = float(np.max(np.abs(angular_error(reference, self.engine.plant.attitude))))
+        axis_error = np.abs(angular_error(reference, self.engine.plant.attitude))
+        # The original brief / current C controller closes camera pointing on Yaw
+        # and only damps Roll/Pitch rates. Do not falsely score it as a 3-axis
+        # attitude-hold controller. The team 3-axis extension is scored on all axes.
+        error = float(axis_error[2] if self.engine.tracking_profile == 'yaw_only' else np.max(axis_error))
         self.max_error = max(self.max_error, error)
         self.in_band = self.in_band + dt if error <= 2. else 0.
         name = self.selected

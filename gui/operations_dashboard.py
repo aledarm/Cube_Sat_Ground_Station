@@ -58,17 +58,17 @@ class OperationsDashboard(QWidget):
         summary = QHBoxLayout()
         summary.setSpacing(8)
 
-        attitude = MiniPanel('Attitude (deg)')
+        attitude = MiniPanel('Attitude (Euler Angles)')
         self.roll_value = attitude.add_row('Roll', '--')
         self.pitch_value = attitude.add_row('Pitch', '--')
         self.yaw_value = attitude.add_row('Yaw', '--')
 
-        rates = MiniPanel('Angular Rates (deg/s)')
+        rates = MiniPanel('Angular Rates')
         self.roll_rate = rates.add_row('Roll Rate', '--')
         self.pitch_rate = rates.add_row('Pitch Rate', '--')
         self.yaw_rate = rates.add_row('Yaw Rate', '--')
 
-        wheels = MiniPanel('Reaction Wheels (RPM)')
+        wheels = MiniPanel('Reaction Wheels')
         self.rw_values = [wheels.add_row(f'RW{i+1}', '--') for i in range(3)]
 
         system = MiniPanel('System')
@@ -83,17 +83,27 @@ class OperationsDashboard(QWidget):
         left.addWidget(telemetry)
 
         cube_card = Card('Cube Attitude')
-        cube_header = QHBoxLayout()
-        cube_header.addWidget(label('Telemetry-driven 3D view', 'Muted', False))
-        cube_header.addStretch()
-        self.cube_readout = label('Roll --   Pitch --   Yaw --', 'Muted', False)
-        cube_header.addWidget(self.cube_readout)
-        cube_card.box.addLayout(cube_header)
+        cube_body = QHBoxLayout()
+        cube_body.setSpacing(12)
         self.cube = CubeView()
-        self.cube.setMinimumHeight(270)
+        self.cube.setMinimumHeight(330)
         self.cube.disturbance_requested.connect(
             lambda delta: self.command_requested.emit(('sim_nudge_vector', delta)))
-        cube_card.box.addWidget(self.cube)
+        cube_body.addWidget(self.cube, 6)
+
+        cube_tools = MiniPanel('3D View')
+        self.cube_readout = label('Roll --\nPitch --\nYaw --', 'Muted', True)
+        cube_tools.box.addWidget(self.cube_readout)
+        self.show_axes = QCheckBox('Show Axes'); self.show_axes.setChecked(True)
+        self.show_grid = QCheckBox('Show Grid'); self.show_grid.setChecked(True)
+        self.show_antennas = QCheckBox('Show Antennas'); self.show_antennas.setChecked(True)
+        cube_tools.box.addWidget(self.show_axes)
+        cube_tools.box.addWidget(self.show_grid)
+        cube_tools.box.addWidget(self.show_antennas)
+        cube_tools.box.addStretch()
+        cube_tools.box.addWidget(label('Drag: Pitch / Yaw\nShift + drag: Roll', 'Muted', True))
+        cube_body.addWidget(cube_tools, 1)
+        cube_card.box.addLayout(cube_body)
         left.addWidget(cube_card, 3)
 
         plot_card = Card('Telemetry Plot')
@@ -268,6 +278,9 @@ class OperationsDashboard(QWidget):
         self.center_target.clicked.connect(self._centre_visual_target)
         self.load_scenario.clicked.connect(lambda: self.command_requested.emit(('sim_load_scenario', self.scenario_selector.currentText())))
         self.camera.target_clicked.connect(self._place_target_from_camera_click)
+        self.show_axes.toggled.connect(self.cube.set_show_axes)
+        self.show_grid.toggled.connect(self.cube.set_show_grid)
+        self.show_antennas.toggled.connect(self.cube.set_show_antennas)
 
     def _centre_visual_target(self) -> None:
         self.sim_target_inputs[2].setValue(0.)
@@ -368,7 +381,8 @@ class OperationsDashboard(QWidget):
         self.mode_value.setText(t.mode)
         self.track_value.setText('LOCKED' if t.target_detected else 'NO TARGET')
         self.cube.set_attitude(t.attitude_deg)
-        self.cube_readout.setText('Roll {:+.1f}°   Pitch {:+.1f}°   Yaw {:+.1f}°'.format(*t.attitude_deg))
+        self.cube.set_control_state(t.armed and not t.estop)
+        self.cube_readout.setText('Roll {:+.1f}°\nPitch {:+.1f}°\nYaw {:+.1f}°'.format(*t.attitude_deg))
         self.camera.set_frame(t.frame, t.target_uv)
         if t.target_detected and t.target_uv is not None:
             self.target_detected.setText('YES')

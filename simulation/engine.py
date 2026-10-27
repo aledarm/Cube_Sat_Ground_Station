@@ -8,6 +8,7 @@ import numpy as np
 from core.models import Command, CommandKind, CommandResult, Telemetry, angular_error, vector3
 from simulation.plant import ReactionWheelPlant, PID
 from simulation.camera import VirtualCamera, rotation_matrix
+from simulation.native_controller import NativeYawController
 
 LOOPS = ('Attitude -> angular rate', 'Angular rate -> body torque', 'Wheel speed bench test')
 DEFAULT_GAINS = {
@@ -22,6 +23,7 @@ class SimulationEngine:
         self.rng = np.random.default_rng(seed)
         self.plant = ReactionWheelPlant()
         self.camera = VirtualCamera()
+        self.native_yaw = NativeYawController()
         self.controllers = {key: PID(value) for key, value in DEFAULT_GAINS.items()}
         self.controllers[LOOPS[1]].linear_measurement = True
         self.controllers[LOOPS[2]].linear_measurement = True
@@ -50,6 +52,7 @@ class SimulationEngine:
     def reset_controller_memory(self) -> None:
         for pid in self.controllers.values():
             pid.reset()
+        self.native_yaw.reset()
 
     def command(self, command: Command) -> CommandResult:
         # Locally idempotent: replaying a command ID does not reapply an operation.
@@ -211,7 +214,23 @@ class SimulationEngine:
                     motor_torque = self.controllers[LOOPS[2]].update(
                         self.wheel_setpoint - self.plant.wheel_rpm,
                         self.plant.wheel_rpm, dt, self.plant.torque_limit)
+                elif self.mode == 'TARGET TRACKING' and self.tracking_profile == 'yaw_only':
+                    # Original-brief path: use the team's C controller exactly for
+                    # the functionality that exists in feature/attitude-rate-control-level0.
+                    # C outer loop: yaw visual/position error -> desired yaw rate.
+                    yaw_error_deg = float(angular_error(self.reference, self.plant.attitude)[2])
+                    desired_yaw_rate = self.native_yaw.yaw_outer(yaw_error_deg, dt)
+                    c_yaw_torque = self.native_yaw.yaw_inner(
+                        desired_yaw_rate, float(self.plant.rate[2]), dt)
+                    # C roll/pitch routine returns desired BODY damping torque.
+                    # The plant input is MOTOR torque, whose body reaction has opposite sign.
+                    damping_gain = 0.004
+                    body_roll = self.native_yaw.damping_body_torque(float(self.plant.rate[0]), damping_gain)
+                    body_pitch = self.native_yaw.damping_body_torque(float(self.plant.rate[1]), damping_gain)
+                    motor_torque = np.array([-body_roll, -body_pitch, -c_yaw_torque])
                 else:
+                    # Team 3-axis extension / manual attitude hold remains in Python;
+                    # it is not presented as functionality from the current C branch.
                     error = angular_error(self.reference, self.plant.attitude)
                     rate_ref = self.controllers[LOOPS[0]].update(
                         error, self.plant.attitude, dt, self.rate_limits)
@@ -263,7 +282,10 @@ class SimulationEngine:
         the displaced attitude using the normal simulated telemetry path.
         """
         delta = vector3(delta_deg, 'Disturbance', 45.)
-        self.plant.attitude[:] = (self.plant.attitude + delta + 180.) % 360. - 180.
+        displaced = (self.plant.attitude + delta + 180.) % 360. - 180.
+        self.plant.set_attitude(displaced)
+        # A drag is treated as a small physical shove, not only a visual rotation.
+        self.plant.rate += np.deg2rad(delta) * 0.08
         self._refresh_camera()
 
     def load_initial_state(self, attitude: np.ndarray) -> None:

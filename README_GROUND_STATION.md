@@ -68,3 +68,40 @@ Before Live integration, confirm with the team:
 - Default visual-control profile is **Original brief - Yaw only**: camera error closes Yaw, while Roll/Pitch damp toward zero. A clearly labelled **3-axis extension** is available for the team's confirmed three-wheel hardware exploration.
 - Original-project scenarios are exposed in the GUI: 30 deg acquisition, 60 s hold, 20 deg disturbance/recovery, moving target, and 2 s occlusion.
 - The simulator remains a test model. It does not replace the onboard ESP32 control implementation or the final TMTC ICD.
+
+## Native C controller integration (v0.4)
+
+The desktop simulator now uses the team's `feature/attitude-rate-control-level0`
+C implementation for the functionality that actually exists in that branch:
+
+- yaw outer loop (`calcular_malha_externa_yaw`)
+- yaw rate/torque loop (`calcular_malha_intermedia_yaw`)
+- roll/pitch rate damping (`calcular_damping_roll_pitch`)
+
+The files are kept under `native_control/`. A prebuilt 64-bit Windows DLL is
+included in `native_control/bin/controlo_atitude.dll`; the Linux test build is
+also included for verification in this package. To rebuild on another machine:
+
+```powershell
+python native_control/build_native.py
+```
+
+The branch does **not** contain rigid-body dynamics. The PC-only plant physics
+therefore remain in `simulation/plant.py`, now using rigid-body gyroscopic
+coupling, wheel angular momentum, quaternion attitude integration, actuator
+limits and small deterministic environmental/bench disturbance torques.
+Disarming or E-STOP removes motor torque; it does not freeze the simulated body.
+
+`Original brief — Yaw only` uses the native C yaw controller and C roll/pitch
+damping. `3-axis extension` remains a separate Python simulator controller until
+the team provides an equivalent three-axis implementation in firmware/C.
+
+The Camera View layout and click-to-place-target behaviour are unchanged.
+
+## v0.4 mockup-fidelity update
+
+- Preserves the existing two-column Operations layout.
+- Camera View remains the large lower-right panel and retains click-to-place target behaviour.
+- Cube Attitude now uses a lightweight solid low-poly QPainter model with body panels, structural rails, reaction-wheel hubs, antennas and body axes.
+- Added local 3D-view toggles for axes, grid and antennas without adding OpenGL dependencies.
+- Native C controller and simulation physics integration from v0.4 are unchanged.

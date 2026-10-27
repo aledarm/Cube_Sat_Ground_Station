@@ -76,33 +76,52 @@ def make_table(headers: list[str], rows: int) -> QTableWidget:
 
 
 class CubeView(QWidget):
-    """Interactive projected 3-D cube driven only by telemetry.
+    """Lightweight solid 3-D CubeSat model driven by telemetry.
 
-    Dragging the rendered body does not directly edit the displayed attitude.
-    Instead it emits a disturbance request to the simulator, so the same
-    telemetry path shows the deviation and subsequent controller recovery.
-
-    Mouse mapping:
-      * drag left/right -> Yaw disturbance
-      * drag up/down    -> Pitch disturbance
-      * Shift + drag left/right -> Roll disturbance
+    The renderer deliberately stays in QPainter so the Ground Station does not
+    need OpenGL or an external 3-D asset. The result is a technical low-poly
+    model: solid body panels, structural rails, reaction-wheel hubs and antennas.
+    Dragging is a *physical simulator disturbance*, not a view-only rotation.
     """
     disturbance_requested = pyqtSignal(object)
 
     def __init__(self) -> None:
         super().__init__()
-        self.setMinimumHeight(220)
+        self.setMinimumHeight(300)
         self.setMouseTracking(True)
         self.setCursor(Qt.OpenHandCursor)
-        self.setToolTip('Simulation: drag the cube to disturb it. Shift + horizontal drag disturbs Roll.')
+        self.setToolTip('Simulation: drag = Pitch/Yaw disturbance; Shift + drag = Roll.')
         self.attitude = np.zeros(3)
+        self.controlled = False
+        self.show_axes = True
+        self.show_grid = True
+        self.show_antennas = True
         self._drag_pos = None
-        self._vertices = np.array([[-1,-1,-1], [1,-1,-1], [1,1,-1], [-1,1,-1],
-                                   [-1,-1,1], [1,-1,1], [1,1,1], [-1,1,1]], dtype=float)
+        self._vertices = np.array([
+            [-1,-1,-1], [1,-1,-1], [1,1,-1], [-1,1,-1],
+            [-1,-1,1],  [1,-1,1],  [1,1,1],  [-1,1,1]
+        ], dtype=float)
+        self._faces = [(0,1,2,3), (4,5,6,7), (0,1,5,4),
+                       (1,2,6,5), (2,3,7,6), (3,0,4,7)]
+        self._edges = [(0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),
+                       (0,4),(1,5),(2,6),(3,7)]
 
     def set_attitude(self, attitude: np.ndarray) -> None:
         self.attitude = np.asarray(attitude, dtype=float).copy()
         self.update()
+
+    def set_control_state(self, controlled: bool) -> None:
+        self.controlled = bool(controlled)
+        self.update()
+
+    def set_show_axes(self, enabled: bool) -> None:
+        self.show_axes = bool(enabled); self.update()
+
+    def set_show_grid(self, enabled: bool) -> None:
+        self.show_grid = bool(enabled); self.update()
+
+    def set_show_antennas(self, enabled: bool) -> None:
+        self.show_antennas = bool(enabled); self.update()
 
     @staticmethod
     def matrix(a: np.ndarray) -> np.ndarray:
@@ -114,38 +133,38 @@ class CubeView(QWidget):
 
     @staticmethod
     def _view_matrix() -> np.ndarray:
-        # Fixed isometric-like camera basis. Body orientation comes from telemetry.
+        # Fixed isometric-like camera. Only spacecraft attitude changes.
         return np.array([[.707, -.707, 0.], [.408, .408, -.816], [.577, .577, .577]])
 
     def _project(self, xyz: np.ndarray, scale: float, center: np.ndarray) -> np.ndarray:
-        # Mild perspective makes depth changes visually apparent while avoiding an
-        # OpenGL dependency. z is shifted positive before perspective division.
-        z = xyz[:, 2] + 6.0
-        perspective = 5.2 / np.maximum(z, 1.0)
+        z = xyz[:, 2] + 6.2
+        perspective = 5.35 / np.maximum(z, 1.0)
         return xyz[:, :2] * perspective[:, None] * scale + center
+
+    @staticmethod
+    def _poly(points: np.ndarray) -> QPolygonF:
+        return QPolygonF([QPointF(float(x), float(y)) for x, y in points])
+
+    @staticmethod
+    def _inset_quad(quad: np.ndarray, amount: float = .11) -> np.ndarray:
+        c = quad.mean(axis=0)
+        return c + (quad - c) * (1.0 - amount)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             self._drag_pos = event.pos()
             self.setCursor(Qt.ClosedHandCursor)
-            event.accept()
-            return
+            event.accept(); return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
         if self._drag_pos is None or not (event.buttons() & Qt.LeftButton):
-            super().mouseMoveEvent(event)
-            return
+            super().mouseMoveEvent(event); return
         delta = event.pos() - self._drag_pos
         self._drag_pos = event.pos()
-        # About 0.12 deg/pixel gives a natural shove without huge jumps. Each
-        # mouse event is clamped so fast drags remain bounded.
         dx = float(np.clip(delta.x() * 0.12, -5., 5.))
         dy = float(np.clip(delta.y() * 0.12, -5., 5.))
-        if event.modifiers() & Qt.ShiftModifier:
-            disturbance = np.array([dx, 0., 0.])
-        else:
-            disturbance = np.array([0., -dy, dx])
+        disturbance = np.array([dx, 0., 0.]) if event.modifiers() & Qt.ShiftModifier else np.array([0., -dy, dx])
         if np.linalg.norm(disturbance) > 0.02:
             self.disturbance_requested.emit(disturbance.tolist())
         event.accept()
@@ -154,54 +173,127 @@ class CubeView(QWidget):
         if event.button() == Qt.LeftButton:
             self._drag_pos = None
             self.setCursor(Qt.OpenHandCursor)
-            event.accept()
-            return
+            event.accept(); return
         super().mouseReleaseEvent(event)
 
-    def paintEvent(self, event) -> None:
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.fillRect(self.rect(), QColor('#030303'))
-        w, h = self.width(), self.height()
+    def _draw_panel_grid(self, p: QPainter, quad: np.ndarray) -> None:
+        # 4x4 solar/electronics panel pattern; cheap bilinear interpolation.
+        a, b, c, d = quad
+        p.setPen(QPen(QColor('#31435a'), 0.75))
+        for t in (0.25, 0.5, 0.75):
+            p.drawLine(QPointF(*(a*(1-t) + d*t)), QPointF(*(b*(1-t) + c*t)))
+            p.drawLine(QPointF(*(a*(1-t) + b*t)), QPointF(*(d*(1-t) + c*t)))
 
-        # Sparse technical floor grid; black background remains dominant.
-        p.setPen(QPen(QColor('#171717'), 1))
-        horizon = int(h * .66)
-        for x in range(-w, w * 2, 34):
+    def _draw_background(self, p: QPainter, w: int, h: int) -> None:
+        p.fillRect(self.rect(), QColor('#05080d'))
+        if not self.show_grid:
+            return
+        p.setPen(QPen(QColor('#101923'), 1))
+        horizon = int(h * .73)
+        for x in range(-w, w * 2, 48):
             p.drawLine(w // 2, horizon, x, h)
         for i in range(7):
             yy = horizon + int((h - horizon) * (i / 7) ** 1.55)
             p.drawLine(0, yy, w, yy)
+        # sparse technical stars/dots, deterministic and intentionally non-realistic
+        p.setPen(QPen(QColor('#263544'), 1))
+        for fx, fy in ((.08,.15),(.18,.27),(.31,.12),(.42,.22),(.61,.13),(.76,.25),(.88,.17),(.93,.37),(.13,.43)):
+            p.drawPoint(int(w*fx), int(h*fy))
+
+    def paintEvent(self, event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        self._draw_background(p, w, h)
 
         view = self._view_matrix()
         rot = self.matrix(self.attitude)
         transformed = (view @ rot @ self._vertices.T).T
-        scale = min(w / 4.2, h / 3.5)
-        center = np.array([w * .49, h * .48])
+        scale = min(w / 4.25, h / 3.75)
+        center = np.array([w * .48, h * .46])
         points = self._project(transformed, scale, center)
 
-        faces = [(0,1,2,3), (4,5,6,7), (0,1,5,4), (1,2,6,5), (2,3,7,6), (3,0,4,7)]
-        colors = ['#0c0d0f', '#15171a', '#0a0b0d', '#1b1e22', '#111316', '#08090a']
-        for idx in sorted(range(6), key=lambda i: transformed[list(faces[i]), 2].mean()):
-            coords = points[list(faces[idx])]
-            p.setBrush(QColor(colors[idx]))
-            p.setPen(QPen(QColor('#a8b0b8'), 1.2))
-            p.drawPolygon(QPolygonF([QPointF(float(x), float(y)) for x, y in coords]))
+        # Dark blue/graphite body panels with a lighter structural chassis.
+        face_colors = ['#0c1420', '#19263a', '#101a28', '#17263d', '#0d1724', '#142135']
+        face_depth = [transformed[list(face), 2].mean() for face in self._faces]
+        order = sorted(range(6), key=lambda i: face_depth[i])
+        for idx in order:
+            ids = list(self._faces[idx])
+            quad = points[ids]
+            p.setPen(QPen(QColor('#4b5868'), 1.1))
+            p.setBrush(QBrush(QColor(face_colors[idx])))
+            p.drawPolygon(self._poly(quad))
 
-        # Body axes rotate with telemetry and therefore make 3-D motion obvious.
-        origin3 = np.array([[0., 0., 0.]])
-        origin2 = self._project(origin3, scale, center)[0]
-        for i, color in enumerate(AXIS_COLORS):
-            endpoint3 = np.array([(view @ rot @ (np.eye(3)[i] * 2.0))])
-            endpoint = self._project(endpoint3, scale, center)[0]
-            p.setPen(QPen(QColor(color), 2.2))
-            p.drawLine(QPointF(*origin2), QPointF(*endpoint))
-            p.drawText(QPointF(endpoint[0] + 5, endpoint[1] - 3), ('+X Roll', '+Y Pitch', '+Z Yaw')[i])
+            inner = self._inset_quad(quad, .12)
+            p.setPen(QPen(QColor('#28394f'), 1.0))
+            p.setBrush(QBrush(QColor('#0b1627' if idx % 2 else '#0d1a2d')))
+            p.drawPolygon(self._poly(inner))
+            self._draw_panel_grid(p, inner)
 
-        p.setPen(QColor('#8f8f8f'))
+        # Structural rails. Two strokes provide a simple metallic low-poly look.
+        p.setPen(QPen(QColor('#414a55'), 8.0, Qt.SolidLine, Qt.RoundCap))
+        for a, b in self._edges:
+            p.drawLine(QPointF(*points[a]), QPointF(*points[b]))
+        p.setPen(QPen(QColor('#aeb6bf'), 4.2, Qt.SolidLine, Qt.RoundCap))
+        for a, b in self._edges:
+            p.drawLine(QPointF(*points[a]), QPointF(*points[b]))
+
+        # Corner blocks/fasteners.
+        p.setPen(QPen(QColor('#20262d'), 1.0))
+        p.setBrush(QColor('#747d87'))
+        for x, y in points:
+            p.drawRoundedRect(QRectF(float(x)-5.3, float(y)-5.3, 10.6, 10.6), 2, 2)
+            p.setBrush(QColor('#20262d'))
+            p.drawEllipse(QPointF(float(x), float(y)), 1.7, 1.7)
+            p.setBrush(QColor('#747d87'))
+
+        # Three reaction-wheel/motor hubs on the positive body faces.
+        hubs_body = np.array([[1.03,0,0], [0,1.03,0], [0,0,1.03]], dtype=float)
+        hubs_t = (view @ rot @ hubs_body.T).T
+        hubs = self._project(hubs_t, scale, center)
+        for i, (x, y) in enumerate(hubs):
+            p.setPen(QPen(QColor('#11161c'), 5.0))
+            p.setBrush(QColor('#303841'))
+            p.drawEllipse(QPointF(float(x), float(y)), 10.0, 10.0)
+            p.setPen(QPen(QColor(AXIS_COLORS[i]), 2.0))
+            p.setBrush(QColor('#11161c'))
+            p.drawEllipse(QPointF(float(x), float(y)), 5.0, 5.0)
+
+        # Thin antennas keep the same schematic/engineering style as the mockup.
+        if self.show_antennas:
+            rods = [(6, np.array([1.65,1.65,1.65])), (5, np.array([1.65,-1.65,1.65])),
+                    (2, np.array([1.65,1.65,-1.65])), (7, np.array([-1.65,1.65,1.65]))]
+            p.setPen(QPen(QColor('#c59045'), 2.2, Qt.SolidLine, Qt.RoundCap))
+            for vid, tip_body in rods:
+                tip_t = np.array([(view @ rot @ tip_body)])
+                tip = self._project(tip_t, scale, center)[0]
+                p.drawLine(QPointF(*points[vid]), QPointF(*tip))
+
+        # Body axes rotate with the actual telemetry attitude.
+        if self.show_axes:
+            origin2 = self._project(np.array([[0.,0.,0.]]), scale, center)[0]
+            labels = ('+X', '+Y', '+Z')
+            for i, color in enumerate(AXIS_COLORS):
+                endpoint3 = np.array([(view @ rot @ (np.eye(3)[i] * 2.25))])
+                endpoint = self._project(endpoint3, scale, center)[0]
+                p.setPen(QPen(QColor(color), 3.0, Qt.SolidLine, Qt.RoundCap))
+                p.drawLine(QPointF(*origin2), QPointF(*endpoint))
+                p.setBrush(QColor(color))
+                vec = endpoint - origin2
+                n = np.linalg.norm(vec) or 1.0
+                u = vec / n; side = np.array([-u[1], u[0]])
+                tri = np.array([endpoint, endpoint-u*12+side*5, endpoint-u*12-side*5])
+                p.drawPolygon(self._poly(tri))
+                p.setFont(QFont('Segoe UI', 9, QFont.DemiBold))
+                p.drawText(QPointF(float(endpoint[0]+6), float(endpoint[1]-5)), labels[i])
+
+        # Bottom status strip mirrors the simulator behaviour rather than decoration.
         p.setFont(QFont('Segoe UI', 8))
-        p.drawText(10, h - 22, 'TELEMETRY-DRIVEN 3D ATTITUDE')
-        p.drawText(10, h - 8, 'SIM: drag = Pitch/Yaw disturbance · Shift+drag = Roll')
+        state = 'ACTIVE STABILIZATION' if self.controlled else 'FREE DRIFT — REACTION WHEELS NOT CONTROLLING'
+        p.setPen(QColor('#4ee58a' if self.controlled else '#ffd24a'))
+        p.drawText(12, h - 12, state)
+        p.setPen(QColor('#7d8792'))
+        p.drawText(w - 250, h - 12, 'drag = physical disturbance')
         p.end()
 
 
